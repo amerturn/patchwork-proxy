@@ -3,23 +3,29 @@ import { z } from 'zod';
 export const HeaderRewriteSchema = z.object({
   set: z.record(z.string()).optional(),
   remove: z.array(z.string()).optional(),
-  append: z.record(z.string()).optional(),
 });
 
 export const RouteSchema = z.object({
-  match: z.string(),
+  match: z.object({
+    path: z.string(),
+    method: z.string().optional(),
+  }),
   target: z.string().url(),
-  stripPrefix: z.string().optional(),
   requestHeaders: HeaderRewriteSchema.optional(),
   responseHeaders: HeaderRewriteSchema.optional(),
 });
 
-export const ProxyConfigSchema = z.object({
-  port: z.number().int().min(1).max(65535).default(8080),
-  host: z.string().default('0.0.0.0'),
-  routes: z.array(RouteSchema).min(1),
+export const RateLimitSchema = z.object({
+  windowMs: z.number().positive().default(60000),
+  maxRequests: z.number().positive().default(100),
+}).optional();
+
+export const ConfigSchema = z.object({
+  port: z.number().default(8080),
+  rateLimit: RateLimitSchema,
+  routes: z.array(RouteSchema),
 });
 
-export type HeaderRewrite = z.infer<typeof HeaderRewriteSchema>;
+export type Config = z.infer<typeof ConfigSchema>;
 export type Route = z.infer<typeof RouteSchema>;
-export type ProxyConfig = z.infer<typeof ProxyConfigSchema>;
+export type RateLimitConfig = z.infer<typeof RateLimitSchema>;
