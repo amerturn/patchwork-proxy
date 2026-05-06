@@ -1,66 +1,72 @@
-import http from 'http';
+import http, { IncomingMessage, ServerResponse } from 'http';
 import https from 'https';
-import { URL } from 'url';
-import { RouteConfig } from '../config/schema';
+import { Config } from '../config/schema';
 import { matchRoute } from './matcher';
 import { rewriteRequestHeaders, rewriteResponseHeaders, buildTargetUrl } from './rewriter';
+import { createRateLimitMiddleware } from '../middleware/rateLimit';
+import { createAuthMiddleware, checkAuth } from '../middleware/auth';
 
-export interface ProxyHandlerOptions {
-  routes: RouteConfig[];
-  defaultTarget?: string;
-}
+export function createProxyHandler(config: Config) {
+  const rateLimitMiddleware = config.rateLimit
+    ? createRateLimitMiddleware(config.rateLimit.windowMs, config.rateLimit.maxRequests)
+    : null;
 
-export function createProxyHandler(options: ProxyHandlerOptions) {
-  return function handleRequest(
-    req: http.IncomingMessage,
-    res: http.ServerResponse
-  ): void {
-    const pathname = req.url ?? '/';
-    const route = matchRoute(pathname, options.routes);
+  const globalAuthMiddleware = config.auth
+    ? createAuthMiddleware(config.auth)
+    : null;
 
-    if (!route && !options.defaultTarget) {
-      res.writeHead(502, { 'Content-Type': 'text/plain' });
-      res.end('No matching route found');
-      return;
+  return function proxyHandler(req: IncomingMessage, res: ServerResponse): void {
+    const runProxy = () => {
+      const route = matchRoute(req, config.routes);
+
+      if (!route) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No matching route' }));
+        return;
+      }
+
+      if (route.auth && !checkAuth(req, route.auth)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const targetUrl = buildTargetUrl(req, route);
+      const parsed = new URL(targetUrl);
+      const isHttps = parsed.protocol === 'https:';
+      const transport = isHttps ? https : http;
+
+      const outHeaders = rewriteRequestHeaders(req.headers, route);
+
+      const proxyReq = transport.request(
+        { hostname: parsed.hostname, port: parsed.port, path: parsed.pathname + parsed.search, method: req.method, headers: outHeaders },
+        (proxyRes) => {
+          const rewrittenHeaders = rewriteResponseHeaders(proxyRes.headers, route);
+          res.writeHead(proxyRes.statusCode ?? 200, rewrittenHeaders);
+          proxyRes.pipe(res);
+        }
+      );
+
+      proxyReq.on('error', (err) => {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Bad Gateway', detail: err.message }));
+      });
+
+      req.pipe(proxyReq);
+    };
+
+    const withAuth = () => {
+      if (globalAuthMiddleware) {
+        globalAuthMiddleware(req, res, runProxy);
+      } else {
+        runProxy();
+      }
+    };
+
+    if (rateLimitMiddleware) {
+      rateLimitMiddleware(req, res, withAuth);
+    } else {
+      withAuth();
     }
-
-    const targetBase = route?.target ?? options.defaultTarget!;
-    const targetUrl = buildTargetUrl(targetBase, pathname);
-    const parsed = new URL(targetUrl);
-    const isHttps = parsed.protocol === 'https:';
-    const transport = isHttps ? https : http;
-
-    const outgoingHeaders = rewriteRequestHeaders(
-      req.headers as Record<string, string>,
-      route?.requestHeaders
-    );
-
-    const proxyReq = transport.request(
-      {
-        hostname: parsed.hostname,
-        port: parsed.port || (isHttps ? 443 : 80),
-        path: parsed.pathname + (parsed.search ?? ''),
-        method: req.method,
-        headers: outgoingHeaders,
-      },
-      (proxyRes) => {
-        const outHeaders = rewriteResponseHeaders(
-          proxyRes.headers as Record<string, string>,
-          route?.responseHeaders
-        );
-        res.writeHead(proxyRes.statusCode ?? 200, outHeaders);
-        proxyRes.pipe(res, { end: true });
-      }
-    );
-
-    proxyReq.on('error', (err) => {
-      console.error('[patchwork-proxy] upstream error:', err.message);
-      if (!res.headersSent) {
-        res.writeHead(502, { 'Content-Type': 'text/plain' });
-        res.end('Bad Gateway');
-      }
-    });
-
-    req.pipe(proxyReq, { end: true });
   };
 }
