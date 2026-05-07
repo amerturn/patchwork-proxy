@@ -1,38 +1,57 @@
-import http from 'http';
-import { loadConfig } from './config/loader';
-import { createProxyHandler } from './proxy/handler';
-import { createRateLimitMiddleware } from './middleware/rateLimit';
-import { RateLimitOptions } from './middleware/rateLimit';
+import http from "http";
+import { loadConfig } from "./config/loader";
+import { createProxyHandler } from "./proxy/handler";
+import { createAuthMiddleware } from "./middleware/auth";
+import { createRateLimitMiddleware } from "./middleware/rateLimit";
+import { createRequestLogger } from "./middleware/logger";
+import { createFileLogger, createCompositeOutput } from "./middleware/accessLog";
+import { IncomingMessage, ServerResponse } from "http";
 
-export async function startServer(configPath: string): Promise<http.Server> {
+type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
+
+function applyMiddlewares(middlewares: Middleware[], req: IncomingMessage, res: ServerResponse, final: () => void): void {
+  let index = 0;
+  function next() {
+    if (index < middlewares.length) {
+      middlewares[index++](req, res, next);
+    } else {
+      final();
+    }
+  }
+  next();
+}
+
+async function main() {
+  const configPath = process.env.CONFIG_PATH ?? "config.yaml";
   const config = await loadConfig(configPath);
-  const proxyHandler = createProxyHandler(config.routes);
 
-  const rateLimitMiddleware = config.rateLimit
-    ? createRateLimitMiddleware(config.rateLimit as RateLimitOptions)
-    : null;
+  const fileOutput = config.logging?.file
+    ? createFileLogger({ filePath: config.logging.file, format: config.logging.format ?? "json" })
+    : undefined;
+
+  const logOutput = fileOutput
+    ? createCompositeOutput((e) => console.log(JSON.stringify(e)), fileOutput)
+    : undefined;
+
+  const middlewares: Middleware[] = [
+    createRequestLogger(logOutput ? { output: logOutput } : {}),
+    ...(config.auth ? [createAuthMiddleware(config.auth)] : []),
+    ...(config.rateLimit ? [createRateLimitMiddleware(config.rateLimit)] : []),
+  ];
+
+  const proxyHandler = createProxyHandler(config);
 
   const server = http.createServer((req, res) => {
-    if (rateLimitMiddleware) {
-      rateLimitMiddleware(req, res, () => proxyHandler(req, res));
-    } else {
-      proxyHandler(req, res);
-    }
+    applyMiddlewares(middlewares, req, res, () => proxyHandler(req, res));
   });
 
-  return new Promise((resolve, reject) => {
-    server.on('error', reject);
-    server.listen(config.port, () => {
-      console.log(`patchwork-proxy listening on port ${config.port}`);
-      resolve(server);
-    });
+  const port = config.port ?? 8080;
+  server.listen(port, () => {
+    console.log(JSON.stringify({ level: "info", message: `patchwork-proxy listening on port ${port}` }));
   });
 }
 
-if (require.main === module) {
-  const configPath = process.argv[2] ?? 'patchwork.yaml';
-  startServer(configPath).catch((err) => {
-    console.error('Failed to start server:', err);
-    process.exit(1);
-  });
-}
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
