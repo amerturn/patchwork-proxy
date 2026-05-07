@@ -1,55 +1,62 @@
 import { z } from 'zod';
 
-export const HeaderRewriteSchema = z.object({
+export const HeaderPatchSchema = z.object({
   set: z.record(z.string()).optional(),
   remove: z.array(z.string()).optional(),
-  forward: z.array(z.string()).optional(),
+  append: z.record(z.string()).optional(),
 });
 
 export const RouteSchema = z.object({
   match: z.object({
     path: z.string(),
-    method: z.string().optional(),
+    method: z.union([z.string(), z.array(z.string())]).optional(),
     headers: z.record(z.string()).optional(),
   }),
   target: z.string().url(),
-  rewrite: z.object({
-    request: HeaderRewriteSchema.optional(),
-    response: HeaderRewriteSchema.optional(),
-    pathPrefix: z.string().optional(),
-  }).optional(),
-});
-
-export const AuthSchema = z.object({
-  type: z.enum(['bearer', 'apiKey', 'basic']),
-  token: z.string().optional(),
-  key: z.string().optional(),
-  username: z.string().optional(),
-  password: z.string().optional(),
-});
-
-export const RateLimitSchema = z.object({
-  windowMs: z.number().positive(),
-  maxRequests: z.number().positive(),
-});
-
-export const CacheSchema = z.object({
-  ttlSeconds: z.number().positive().default(60),
-  maxSize: z.number().positive().default(500),
-  cacheableMethods: z.array(z.string()).default(['GET', 'HEAD']),
-  cacheableStatuses: z.array(z.number()).default([200, 203, 204, 301, 404]),
+  pathRewrite: z.record(z.string()).optional(),
+  requestHeaders: HeaderPatchSchema.optional(),
+  responseHeaders: HeaderPatchSchema.optional(),
+  auth: z
+    .object({
+      type: z.enum(['bearer', 'apiKey', 'basic']),
+      secret: z.string(),
+    })
+    .optional(),
+  rateLimit: z
+    .object({
+      windowMs: z.number().positive(),
+      max: z.number().positive(),
+    })
+    .optional(),
+  cache: z
+    .object({
+      ttl: z.number().positive(),
+      methods: z.array(z.string()).optional(),
+    })
+    .optional(),
+  circuitBreaker: z
+    .object({
+      failureThreshold: z.number().positive().optional(),
+      successThreshold: z.number().positive().optional(),
+      timeout: z.number().positive().optional(),
+    })
+    .optional(),
 });
 
 export const ConfigSchema = z.object({
-  port: z.number().default(8080),
-  host: z.string().default('0.0.0.0'),
-  routes: z.array(RouteSchema),
-  auth: AuthSchema.optional(),
-  rateLimit: RateLimitSchema.optional(),
-  cache: CacheSchema.optional(),
-  logFile: z.string().optional(),
+  server: z.object({
+    port: z.number().int().positive().default(8080),
+    host: z.string().default('0.0.0.0'),
+  }),
+  accessLog: z
+    .object({
+      file: z.string().optional(),
+      console: z.boolean().default(true),
+    })
+    .optional(),
+  routes: z.array(RouteSchema).min(1),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type Route = z.infer<typeof RouteSchema>;
-export type CacheConfig = z.infer<typeof CacheSchema>;
+export type HeaderPatch = z.infer<typeof HeaderPatchSchema>;
