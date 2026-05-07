@@ -1,57 +1,66 @@
-import http from "http";
-import { loadConfig } from "./config/loader";
-import { createProxyHandler } from "./proxy/handler";
-import { createAuthMiddleware } from "./middleware/auth";
-import { createRateLimitMiddleware } from "./middleware/rateLimit";
-import { createRequestLogger } from "./middleware/logger";
-import { createFileLogger, createCompositeOutput } from "./middleware/accessLog";
-import { IncomingMessage, ServerResponse } from "http";
+import http from 'http';
+import { loadConfig } from './config/loader';
+import { createProxyHandler } from './proxy/handler';
+import { createRateLimitMiddleware } from './middleware/rateLimit';
+import { createAuthMiddleware } from './middleware/auth';
+import { createRequestLogger } from './middleware/logger';
+import { createCacheMiddleware } from './middleware/cache';
 
-type Middleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
+export type Middleware = (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  next: () => void
+) => void;
 
-function applyMiddlewares(middlewares: Middleware[], req: IncomingMessage, res: ServerResponse, final: () => void): void {
-  let index = 0;
-  function next() {
-    if (index < middlewares.length) {
-      middlewares[index++](req, res, next);
-    } else {
-      final();
-    }
-  }
-  next();
+export function next(_res: http.ServerResponse, middlewares: Middleware[], index: number,
+  req: http.IncomingMessage, finalHandler: () => void): void {
+  if (index >= middlewares.length) return finalHandler();
+  middlewares[index](req, _res, () =>
+    next(_res, middlewares, index + 1, req, finalHandler)
+  );
+}
+
+export function applyMiddlewares(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  middlewares: Middleware[],
+  finalHandler: () => void
+): void {
+  next(res, middlewares, 0, req, finalHandler);
 }
 
 async function main() {
-  const configPath = process.env.CONFIG_PATH ?? "config.yaml";
+  const configPath = process.env.CONFIG_PATH ?? 'config.yaml';
   const config = await loadConfig(configPath);
 
-  const fileOutput = config.logging?.file
-    ? createFileLogger({ filePath: config.logging.file, format: config.logging.format ?? "json" })
-    : undefined;
+  const middlewares: Middleware[] = [];
 
-  const logOutput = fileOutput
-    ? createCompositeOutput((e) => console.log(JSON.stringify(e)), fileOutput)
-    : undefined;
+  middlewares.push(createRequestLogger());
 
-  const middlewares: Middleware[] = [
-    createRequestLogger(logOutput ? { output: logOutput } : {}),
-    ...(config.auth ? [createAuthMiddleware(config.auth)] : []),
-    ...(config.rateLimit ? [createRateLimitMiddleware(config.rateLimit)] : []),
-  ];
+  if (config.auth) {
+    middlewares.push(createAuthMiddleware(config.auth));
+  }
+
+  if (config.rateLimit) {
+    middlewares.push(createRateLimitMiddleware(config.rateLimit));
+  }
+
+  if (config.cache) {
+    middlewares.push(createCacheMiddleware(config.cache));
+  }
 
   const proxyHandler = createProxyHandler(config);
 
   const server = http.createServer((req, res) => {
-    applyMiddlewares(middlewares, req, res, () => proxyHandler(req, res));
+    applyMiddlewares(req, res, middlewares, () => proxyHandler(req, res));
   });
 
-  const port = config.port ?? 8080;
-  server.listen(port, () => {
-    console.log(JSON.stringify({ level: "info", message: `patchwork-proxy listening on port ${port}` }));
+  server.listen(config.port, config.host, () => {
+    console.log(`patchwork-proxy listening on ${config.host}:${config.port}`);
   });
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error('Failed to start server:', err);
   process.exit(1);
 });
