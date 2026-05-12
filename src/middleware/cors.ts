@@ -56,6 +56,18 @@ export function applyCorsHeaders(
   }
 }
 
+/**
+ * Returns true if the request is a CORS preflight request.
+ * A preflight request uses the OPTIONS method and includes
+ * the Access-Control-Request-Method header.
+ */
+export function isPreflightRequest(req: IncomingMessage): boolean {
+  return (
+    req.method === 'OPTIONS' &&
+    req.headers['access-control-request-method'] !== undefined
+  );
+}
+
 export function createCorsMiddleware(
   options: CorsOptions
 ) {
@@ -66,7 +78,7 @@ export function createCorsMiddleware(
   ): void {
     applyCorsHeaders(req, res, options);
 
-    if (req.method === 'OPTIONS') {
+    if (isPreflightRequest(req)) {
       res.writeHead(204);
       res.end();
       return;
