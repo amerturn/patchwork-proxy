@@ -54,6 +54,11 @@ function post(
   });
 }
 
+/** Helper to start a server and resolve once it is listening */
+function listen(server: http.Server): Promise<void> {
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+}
+
 describe("bodyLimit integration", () => {
   let server: http.Server;
 
@@ -62,35 +67,29 @@ describe("bodyLimit integration", () => {
     else done();
   });
 
-  it("allows requests within the body size limit", (done) => {
+  it("allows requests within the body size limit", async () => {
     server = startServer("1kb");
-    server.listen(0, "127.0.0.1", async () => {
-      const smallBody = "a".repeat(512);
-      const res = await post(server, smallBody);
-      expect(res.status).toBe(200);
-      const json = JSON.parse(res.body);
-      expect(json.received).toBe(512);
-      done();
-    });
+    await listen(server);
+    const smallBody = "a".repeat(512);
+    const res = await post(server, smallBody);
+    expect(res.status).toBe(200);
+    const json = JSON.parse(res.body);
+    expect(json.received).toBe(512);
   });
 
-  it("rejects requests exceeding the body size limit via Content-Length", (done) => {
+  it("rejects requests exceeding the body size limit via Content-Length", async () => {
     server = startServer("1kb");
-    server.listen(0, "127.0.0.1", async () => {
-      const largeBody = "b".repeat(2048);
-      const res = await post(server, largeBody);
-      expect(res.status).toBe(413);
-      done();
-    });
+    await listen(server);
+    const largeBody = "b".repeat(2048);
+    const res = await post(server, largeBody);
+    expect(res.status).toBe(413);
   });
 
-  it("allows requests exactly at the limit", (done) => {
+  it("allows requests exactly at the limit", async () => {
     server = startServer(1024);
-    server.listen(0, "127.0.0.1", async () => {
-      const exactBody = "c".repeat(1024);
-      const res = await post(server, exactBody);
-      expect(res.status).toBe(200);
-      done();
-    });
+    await listen(server);
+    const exactBody = "c".repeat(1024);
+    const res = await post(server, exactBody);
+    expect(res.status).toBe(200);
   });
 });
